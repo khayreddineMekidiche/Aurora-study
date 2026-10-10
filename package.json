@@ -1,0 +1,10 @@
+{
+  "name": "aurora-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix Aurora run dev",
+    "build": "npm --prefix Aurora run build",
+    "lint": "npm --prefix Aurora run lint",
+    "preview": "npm --prefix Aurora run preview"
+  }
+}
