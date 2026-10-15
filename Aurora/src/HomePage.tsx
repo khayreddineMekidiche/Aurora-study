@@ -1,3 +1,6 @@
+import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { useAuth } from './auth/useAuth'
 import { AuroraBrand } from './components/AuthComponents'
 import './HomePage.css'
 
@@ -307,22 +310,102 @@ function QuizPanel() {
 }
 
 function HomePage() {
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
+  const [isSigningOut, setIsSigningOut] = useState(false)
+  const [menuError, setMenuError] = useState('')
+  const menuRef = useRef<HTMLDivElement>(null)
+  const { user, signOut } = useAuth()
+  const navigate = useNavigate()
+  const metadata = user?.user_metadata as Record<string, unknown> | undefined
+  const metadataFullName = metadata?.full_name
+  const fullName = typeof metadataFullName === 'string' ? metadataFullName.trim() : ''
+  const fallbackName = user?.email?.split('@')[0] ?? 'User'
+  const displayName = fullName || fallbackName
+  const avatarLetter = displayName.trim().charAt(0).toUpperCase() || 'U'
+
+  useEffect(() => {
+    if (!isUserMenuOpen) {
+      return
+    }
+
+    function handleMouseDown(event: MouseEvent) {
+      const target = event.target
+
+      if (target instanceof Node && !menuRef.current?.contains(target)) {
+        setIsUserMenuOpen(false)
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setIsUserMenuOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleMouseDown)
+    document.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isUserMenuOpen])
+
+  async function handleSignOut() {
+    setMenuError('')
+    setIsSigningOut(true)
+
+    try {
+      await signOut()
+      navigate('/login', { replace: true })
+    } catch (caughtError) {
+      setMenuError(caughtError instanceof Error ? caughtError.message : 'Unable to log out.')
+      setIsSigningOut(false)
+    }
+  }
+
   return (
     <div className="home-page">
       <header className="app-header">
-        <a className="app-header__brand" href="#home" aria-label="Aurora AI home">
+        <Link className="app-header__brand" to="/" aria-label="Aurora AI home">
           <AuroraBrand />
-        </a>
+        </Link>
         <div className="app-header__right">
           <span className="header-greeting">Your personal study space</span>
-          {/* TODO: connect this button to the user menu. */}
-          <button className="user-menu" type="button" aria-label="Open user menu">
-            <span className="user-avatar" aria-hidden="true">A</span>
-            <span className="user-menu__name">Alex Morgan</span>
-            <svg className="chevron-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="m4 6 4 4 4-4" />
-            </svg>
-          </button>
+          <div className="user-menu-wrapper" ref={menuRef}>
+            <button
+              className="user-menu"
+              type="button"
+              aria-label="Open user menu"
+              aria-haspopup="menu"
+              aria-expanded={isUserMenuOpen}
+              onClick={() => setIsUserMenuOpen((isOpen) => !isOpen)}
+            >
+              <span className="user-avatar" aria-hidden="true">{avatarLetter}</span>
+              <span className="user-menu__name">{displayName}</span>
+              <svg className="chevron-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="m4 6 4 4 4-4" />
+              </svg>
+            </button>
+            {isUserMenuOpen && (
+              <div className="user-dropdown" role="menu">
+                {menuError && (
+                  <p className="user-dropdown__error" role="alert">
+                    {menuError}
+                  </p>
+                )}
+                <button
+                  className="user-dropdown__item"
+                  type="button"
+                  role="menuitem"
+                  disabled={isSigningOut}
+                  onClick={() => void handleSignOut()}
+                >
+                  {isSigningOut ? 'Logging out...' : 'Log out'}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 

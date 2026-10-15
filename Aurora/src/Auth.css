@@ -181,6 +181,26 @@
   font-size: 11px;
 }
 
+.auth-message {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.auth-message--error {
+  border: 1px solid #fed7d7;
+  background: #fff5f5;
+  color: #c53030;
+}
+
+.auth-message--success {
+  border: 1px solid #bde8e4;
+  background: #e6fffa;
+  color: #287f7b;
+}
+
 .button {
   display: inline-flex;
   min-height: 43px;

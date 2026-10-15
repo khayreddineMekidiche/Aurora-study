@@ -108,6 +108,10 @@
     background-color 160ms ease;
 }
 
+.user-menu-wrapper {
+  position: relative;
+}
+
 .user-menu:hover {
   border-color: #e2e8f0;
   background: #f8fafc;
@@ -137,6 +141,57 @@
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.5;
+}
+
+.user-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 3;
+  min-width: 150px;
+  padding: 6px;
+  border: 1px solid rgb(226 232 240 / 95%);
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgb(26 54 93 / 12%);
+}
+
+.user-dropdown__item {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #2d3748;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.user-dropdown__item:hover:not(:disabled),
+.user-dropdown__item:focus-visible {
+  background: #f0fdfa;
+  color: #287f7b;
+}
+
+.user-dropdown__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.user-dropdown__error {
+  margin: 0 0 5px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: #fff5f5;
+  color: #c53030;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .workspace {

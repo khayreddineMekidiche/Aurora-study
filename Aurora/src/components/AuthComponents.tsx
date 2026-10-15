@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ChangeEventHandler, ReactNode } from 'react'
 
 type InputFieldProps = {
   id: string
@@ -7,6 +7,10 @@ type InputFieldProps = {
   placeholder: string
   autoComplete: string
   action?: ReactNode
+  value?: string
+  onChange?: ChangeEventHandler<HTMLInputElement>
+  required?: boolean
+  disabled?: boolean
 }
 
 export function InputField({
@@ -16,6 +20,10 @@ export function InputField({
   placeholder,
   autoComplete,
   action,
+  value,
+  onChange,
+  required,
+  disabled,
 }: InputFieldProps) {
   return (
     <div className="field">
@@ -29,6 +37,10 @@ export function InputField({
           type={type}
           placeholder={placeholder}
           autoComplete={autoComplete}
+          value={value}
+          onChange={onChange}
+          required={required}
+          disabled={disabled}
         />
         {action}
       </div>
