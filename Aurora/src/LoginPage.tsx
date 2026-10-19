@@ -73,10 +73,9 @@ function LoginPage() {
                 </button>
               }
             />
-            {/* TODO: password reset */}
-            <a className="text-link forgot-link" href="#forgot-password">
+            <Link className="text-link forgot-link" to="/forgot-password">
               Forgot password?
-            </a>
+            </Link>
           </div>
 
           {error && (

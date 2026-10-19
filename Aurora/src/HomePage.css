@@ -357,9 +357,46 @@
   font-size: 10px;
 }
 
+.summary-card__error {
+  margin: 7px 0 0;
+  color: #c53030;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.document-retry {
+  margin: 8px 0 0;
+  padding: 4px 9px;
+  border: 1px solid #d5dde6;
+  border-radius: 999px;
+  background: #fff;
+  color: #287f7b;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.document-retry:hover:not(:disabled) {
+  border-color: #a8d8d5;
+  background: #f0fdfa;
+}
+
+.document-retry:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .upload-cta {
   width: 100%;
   margin-top: 17px;
+}
+
+.upload-error {
+  margin: 12px 0 0;
+  color: #c53030;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .button {

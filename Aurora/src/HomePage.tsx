@@ -1,86 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from './auth/useAuth'
 import { AuroraBrand } from './components/AuthComponents'
+import { useWorkspaceData } from './data/useWorkspaceData'
+import { uploadDocument } from './data/uploadDocument'
+import { supabase } from './lib/supabase'
+import type { DocumentRow, MessageRow, QuizRow } from './types/db'
 import './HomePage.css'
 
-type Summary = {
-  name: string
-  kind: 'pdf' | 'document'
-  summary: string
+async function invokeDocumentProcessing(documentId: string): Promise<void> {
+  try {
+    const { error } = await supabase.functions.invoke('process-document', {
+      body: { document_id: documentId },
+    })
+    if (error) console.error('Document processing request failed:', error)
+  } catch (error) {
+    console.error('Document processing request failed:', error)
+  }
 }
 
-type Message = {
-  author: 'you' | 'aurora'
-  text: string
-}
-
-const summaries: Summary[] = [
-  {
-    name: 'Introduction to Biology.pdf',
-    kind: 'pdf',
-    summary:
-      'An overview of cell structure, energy conversion, and the building blocks of living organisms.',
-  },
-  {
-    name: 'Lecture notes — Week 4.docx',
-    kind: 'document',
-    summary:
-      'Notes on photosynthesis, including the light-dependent reactions and the Calvin cycle.',
-  },
-]
-
-const messages: Message[] = [
-  {
-    author: 'you',
-    text: 'Can you explain how photosynthesis turns light into chemical energy?',
-  },
-  {
-    author: 'aurora',
-    text: 'Absolutely! Plants capture sunlight in their chloroplasts. During the light-dependent reactions, that energy is stored as ATP and NADPH. The Calvin cycle then uses those molecules to build sugars from carbon dioxide.',
-  },
-]
-
-const quizQuestions = [
-  {
-    question: 'Which organelle is responsible for photosynthesis?',
-    options: [
-      'Mitochondrion',
-      'Chloroplast',
-      'Nucleus',
-      'Ribosome',
-    ],
-  },
-  {
-    question: 'What is the main purpose of photosynthesis?',
-    options: [
-      'It converts light energy into chemical energy stored in sugars.',
-      'It breaks down glucose to release stored energy.',
-      'It absorbs oxygen and releases carbon dioxide.',
-      'It moves water from the leaves to the roots.',
-    ],
-  },
-  {
-    question: 'Which gas do plants take in during photosynthesis?',
-    options: ['Oxygen', 'Nitrogen', 'Carbon dioxide', 'Hydrogen'],
-  },
-  {
-    question: 'Where do the light-dependent reactions take place?',
-    options: [
-      'In the thylakoid membranes',
-      'In the nucleus',
-      'In the cytoplasm',
-      'In the cell wall',
-    ],
-  },
-  {
-    question: 'What sugar is produced during photosynthesis?',
-    options: ['Glucose', 'Lactose', 'Fructose only', 'Sucrose only'],
-  },
-]
-const currentQuizQuestion = quizQuestions[1]
-
-function FileTypeIcon({ kind }: { kind: Summary['kind'] }) {
+function FileTypeIcon({ kind }: { kind: 'pdf' | 'document' }) {
   return (
     <span className={`file-icon file-icon--${kind}`} aria-hidden="true">
       {kind === 'pdf' ? (
@@ -132,7 +71,65 @@ function SparkleIcon() {
   )
 }
 
-function SummaryPanel() {
+function SummaryPanel({ documents, loading, error, studySpaceId, userId, refetchDocuments }: {
+  documents: DocumentRow[]
+  loading: boolean
+  error: string | null
+  studySpaceId: string | null
+  userId: string | undefined
+  refetchDocuments: () => Promise<void>
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const [retryingDocumentIds, setRetryingDocumentIds] = useState<Set<string>>(() => new Set())
+  const [currentTime, setCurrentTime] = useState(0)
+
+  useEffect(() => {
+    if (!documents.some((document) => document.processing_status === 'pending')) return
+    const intervalId = window.setInterval(() => setCurrentTime(Date.now()), 3000)
+    return () => window.clearInterval(intervalId)
+  }, [documents])
+
+  async function handleRetry(documentId: string) {
+    setRetryingDocumentIds((current) => new Set(current).add(documentId))
+    try {
+      await invokeDocumentProcessing(documentId)
+      await refetchDocuments()
+    } catch (caughtError) {
+      console.error('Unable to refresh document after retry:', caughtError)
+    } finally {
+      setRetryingDocumentIds((current) => {
+        const next = new Set(current)
+        next.delete(documentId)
+        return next
+      })
+    }
+  }
+
+  async function handleFileSelection(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+
+    if (!studySpaceId || !userId) {
+      setUploadError('Your study space is not ready yet. Please try again.')
+      return
+    }
+
+    setUploadError('')
+    setIsUploading(true)
+    try {
+      const document = await uploadDocument(file, studySpaceId, userId)
+      void invokeDocumentProcessing(document.id)
+      await refetchDocuments()
+    } catch (caughtError) {
+      setUploadError(caughtError instanceof Error ? caughtError.message : 'Unable to upload this file.')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
   return (
     <section className="workspace-panel summaries-panel" aria-labelledby="summaries-heading">
       <div className="panel-heading">
@@ -142,22 +139,38 @@ function SummaryPanel() {
         </div>
       </div>
 
-      {summaries.length > 0 ? (
+      {loading ? <p>Loading files...</p> : error ? <p role="alert">{error}</p> : documents.length > 0 ? (
         <ul className="summary-list">
-          {summaries.map((file) => (
-            <li key={file.name}>
+          {documents.map((file) => {
+            const kind = file.file_type.toLowerCase() === 'pdf' ? 'pdf' : 'document'
+            const isStalled = file.processing_status === 'pending' &&
+              currentTime - new Date(file.created_at).getTime() >= 2 * 60 * 1000
+            const canRetry = file.processing_status === 'failed' || isStalled
+            return <li key={file.id}>
               <article className="summary-card">
                 <div className="summary-card__title">
-                  <FileTypeIcon kind={file.kind} />
-                  <h3 title={file.name}>{file.name}</h3>
+                  <FileTypeIcon kind={kind} />
+                  <h3 title={file.file_name}>{file.file_name}</h3>
                 </div>
-                <p>{file.summary}</p>
-                <span className="summary-card__type">
-                  {file.kind === 'pdf' ? 'PDF document' : 'Word document'}
-                </span>
+                <p>{file.summary ?? 'Summary not ready yet'}</p>
+                <span className="summary-card__type">{kind === 'pdf' ? 'PDF document' : 'Document'}</span>
+                {file.processing_status === 'processing' && <span className="summary-card__type">Processing...</span>}
+                {file.processing_status === 'pending' && <span className="summary-card__type">Pending</span>}
+                {file.processing_status === 'failed' && <span className="summary-card__type">Failed</span>}
+                {file.processing_status === 'failed' && file.error_message && <p className="summary-card__error">{file.error_message}</p>}
+                {canRetry && (
+                  <button
+                    className="document-retry"
+                    type="button"
+                    disabled={retryingDocumentIds.has(file.id)}
+                    onClick={() => void handleRetry(file.id)}
+                  >
+                    {retryingDocumentIds.has(file.id) ? 'Retrying...' : 'Retry'}
+                  </button>
+                )}
               </article>
             </li>
-          ))}
+          })}
         </ul>
       ) : (
         <div className="empty-state">
@@ -168,16 +181,25 @@ function SummaryPanel() {
         </div>
       )}
 
-      {/* TODO: connect this button to file upload. */}
-      <button className="button button--outline upload-cta" type="button">
+      {uploadError && <p className="upload-error" role="alert">{uploadError}</p>}
+      <input
+        ref={inputRef}
+        className="visually-hidden"
+        type="file"
+        accept=".pdf,.docx,.txt"
+        onChange={(event) => void handleFileSelection(event)}
+        tabIndex={-1}
+        aria-label="Choose a PDF, DOCX, or TXT file"
+      />
+      <button className="button button--outline upload-cta" type="button" disabled={isUploading || loading || !studySpaceId} onClick={() => inputRef.current?.click()}>
         <UploadIcon />
-        <span>Upload a file</span>
+        <span>{isUploading ? 'Uploading...' : 'Upload a file'}</span>
       </button>
     </section>
   )
 }
 
-function ChatPanel() {
+function ChatPanel({ messages, loading, error }: { messages: MessageRow[]; loading: boolean; error: string | null }) {
   return (
     <section className="workspace-panel chat-panel" aria-labelledby="chat-heading">
       <div className="panel-heading chat-panel__heading">
@@ -192,32 +214,33 @@ function ChatPanel() {
       </div>
 
       <div className="chat-messages" aria-label="Conversation">
-        <p className="chat-date">Today</p>
-        {messages.map((message, index) => (
+        {messages.length > 0 && <p className="chat-date">{new Date(messages[0].created_at).toLocaleDateString()}</p>}
+        {loading ? <p>Loading conversation...</p> : error ? <p role="alert">{error}</p> : messages.length === 0 ? <p>Ask a question about your files to get started</p> : messages.map((message) => (
           <article
-            className={`message message--${message.author}`}
-            key={`${message.author}-${index}`}
+            className={`message message--${message.role === 'user' ? 'you' : 'aurora'}`}
+            key={message.id}
           >
-            {message.author === 'aurora' && (
+            {message.role === 'assistant' && (
               <span className="assistant-avatar" aria-hidden="true">
                 <SparkleIcon />
               </span>
             )}
             <div className="message__content">
               <span className="message__author">
-                {message.author === 'you' ? 'You' : 'Aurora'}
+                {message.role === 'user' ? 'You' : 'Aurora'}
               </span>
-              <p>{message.text}</p>
+              <p>{message.content}</p>
             </div>
           </article>
         ))}
       </div>
 
-      <div className="composer-attachment" aria-label="Attached file">
+      {/* TODO: show attached files (step 3) */}
+      {/* <div className="composer-attachment" aria-label="Attached file">
         <FileTypeIcon kind="pdf" />
         <span>Introduction to Biology.pdf</span>
         <span className="attachment-context">Attached</span>
-      </div>
+      </div> */}
       {/* TODO: connect the composer to chat submission. */}
       <form className="chat-composer" onSubmit={(event) => event.preventDefault()}>
         <label className="visually-hidden" htmlFor="chat-message">
@@ -242,7 +265,11 @@ function ChatPanel() {
   )
 }
 
-function QuizPanel() {
+function QuizPanel({ quiz, loading, error }: { quiz: QuizRow | null; loading: boolean; error: string | null }) {
+  const question = quiz?.questions[0]
+  const total = quiz?.questions.length ?? 0
+  const progress = total > 0 ? 100 / total : 0
+
   return (
     <section className="workspace-panel quiz-panel" aria-labelledby="quiz-heading">
       <div className="panel-heading">
@@ -250,31 +277,31 @@ function QuizPanel() {
           <h2 id="quiz-heading">Quick quiz</h2>
           <p className="panel-subtitle">Check what you’ve learned</p>
         </div>
-        <span className="quiz-badge">Biology</span>
+        {quiz && <span className="quiz-badge">{quiz.title}</span>}
       </div>
 
-      {quizQuestions.length > 0 ? (
+      {loading ? <p>Loading quiz...</p> : error ? <p role="alert">{error}</p> : question ? (
         <>
           <div className="quiz-card">
             <div className="quiz-progress">
-              <span>Question 2 of 5</span>
-              <span>40%</span>
+              <span>Question 1 of {total}</span>
+              <span>{Math.round(progress)}%</span>
             </div>
             <div
               className="progress-track"
               role="progressbar"
               aria-label="Quiz progress"
               aria-valuemin={0}
-              aria-valuemax={5}
-              aria-valuenow={2}
+              aria-valuemax={total}
+              aria-valuenow={1}
             >
-              <span />
+              <span style={{ width: `${progress}%` }} />
             </div>
 
-            <p className="quiz-question">{currentQuizQuestion.question}</p>
+            <p className="quiz-question">{question.question}</p>
 
             <ol className="quiz-options">
-              {currentQuizQuestion.options.map((option, index) => (
+              {question.options.map((option, index) => (
                 <li className="quiz-option" key={option}>
                   <span className="quiz-option__letter" aria-hidden="true">
                     {String.fromCharCode(65 + index)}
@@ -286,16 +313,15 @@ function QuizPanel() {
           </div>
 
           <div className="quiz-navigation">
-            {/* TODO: connect to quiz question navigation. */}
+            {/* TODO: quiz navigation (step 6) */}
             <button className="button button--outline" type="button">
               Previous
             </button>
-            {/* TODO: connect to quiz question navigation. */}
+            {/* TODO: quiz navigation (step 6) */}
             <button className="button button--primary quiz-next" type="button">
               Next
             </button>
           </div>
-          <p className="quiz-source">Based on Introduction to Biology.pdf</p>
         </>
       ) : (
         <div className="empty-state">
@@ -315,6 +341,7 @@ function HomePage() {
   const [menuError, setMenuError] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
   const { user, signOut } = useAuth()
+  const workspaceData = useWorkspaceData()
   const navigate = useNavigate()
   const metadata = user?.user_metadata as Record<string, unknown> | undefined
   const metadataFullName = metadata?.full_name
@@ -410,9 +437,16 @@ function HomePage() {
       </header>
 
       <main className="workspace" aria-label="Study workspace">
-        <SummaryPanel />
-        <ChatPanel />
-        <QuizPanel />
+        <SummaryPanel
+          documents={workspaceData.documents}
+          loading={workspaceData.loading}
+          error={workspaceData.error}
+          studySpaceId={workspaceData.studySpace?.id ?? null}
+          userId={user?.id}
+          refetchDocuments={workspaceData.refetchDocuments}
+        />
+        <ChatPanel messages={workspaceData.messages} loading={workspaceData.loading} error={workspaceData.error} />
+        <QuizPanel quiz={workspaceData.quiz} loading={workspaceData.loading} error={workspaceData.error} />
       </main>
     </div>
   )
