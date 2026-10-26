@@ -31,7 +31,14 @@ export type MessageRow = {
   conversation_id: string
   role: 'user' | 'assistant'
   content: string
+  sources: MessageSource[] | null
   created_at: string
+}
+
+export type MessageSource = {
+  document_id: string
+  file_name: string
+  page_number: number | null
 }
 
 export type QuizQuestion = {

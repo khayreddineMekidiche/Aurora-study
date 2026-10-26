@@ -606,6 +606,23 @@
   line-height: 1.65;
 }
 
+.message__sources {
+  display: block;
+  margin: 6px 2px 0;
+  color: #8a97a8;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.chat-error {
+  align-self: center;
+  margin: 0;
+  color: #c53030;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+
 .message--you .message__content > p {
   border-color: #d1efec;
   border-radius: 13px 4px 13px 13px;
@@ -708,6 +725,11 @@
   border-color: #2d9f9a;
   background: #2d9f9a;
   color: #fff;
+}
+
+.composer-send:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .chat-disclaimer {

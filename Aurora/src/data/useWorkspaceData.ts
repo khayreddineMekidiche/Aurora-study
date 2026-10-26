@@ -20,7 +20,13 @@ type WorkspaceData = {
   quiz: QuizRow | null
 }
 
-type WorkspaceResult = WorkspaceData & { refetchDocuments: () => Promise<void> }
+type WorkspaceResult = WorkspaceData & {
+  conversationId: string | null
+  setConversationId: (conversationId: string | null) => void
+  appendMessages: (messages: MessageRow[]) => void
+  replaceMessages: (temporaryIds: string[], messages: MessageRow[]) => void
+  refetchDocuments: () => Promise<void>
+}
 
 const initialData: WorkspaceData = {
   loading: true,
@@ -39,6 +45,19 @@ export function useWorkspaceData(): WorkspaceResult {
   const userId = user?.id
   const [data, setData] = useState<WorkspaceData>(initialData)
   const [loadedUserId, setLoadedUserId] = useState<string | null>(null)
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
+
+  const appendMessages = useCallback((messages: MessageRow[]) => {
+    setData((current) => ({ ...current, messages: [...current.messages, ...messages] }))
+  }, [])
+
+  const replaceMessages = useCallback((temporaryIds: string[], messages: MessageRow[]) => {
+    const removedIds = new Set(temporaryIds)
+    setData((current) => ({
+      ...current,
+      messages: [...current.messages.filter((message) => !removedIds.has(message.id)), ...messages],
+    }))
+  }, [])
 
   const refetchDocuments = useCallback(async () => {
     const studySpaceId = data.studySpace?.id
@@ -140,7 +159,7 @@ export function useWorkspaceData(): WorkspaceResult {
         if (conversation) {
           const messagesResult = await supabase
             .from('messages')
-            .select('id, conversation_id, role, content, created_at')
+            .select('id, conversation_id, role, content, sources, created_at')
             .eq('conversation_id', conversation.id)
             .order('created_at', { ascending: true })
             .limit(100)
@@ -155,6 +174,7 @@ export function useWorkspaceData(): WorkspaceResult {
           : null
 
         if (!cancelled) {
+          setActiveConversationId(conversation?.id ?? null)
           setData({
             loading: false,
             error: null,
@@ -178,7 +198,33 @@ export function useWorkspaceData(): WorkspaceResult {
     return () => { cancelled = true }
   }, [userId])
 
-  if (!userId) return { ...initialData, loading: false, refetchDocuments }
-  if (loadedUserId !== userId) return { ...initialData, refetchDocuments }
-  return { ...data, refetchDocuments }
+  if (!userId) {
+    return {
+      ...initialData,
+      loading: false,
+      conversationId: null,
+      setConversationId: setActiveConversationId,
+      appendMessages,
+      replaceMessages,
+      refetchDocuments,
+    }
+  }
+  if (loadedUserId !== userId) {
+    return {
+      ...initialData,
+      conversationId: null,
+      setConversationId: setActiveConversationId,
+      appendMessages,
+      replaceMessages,
+      refetchDocuments,
+    }
+  }
+  return {
+    ...data,
+    conversationId: activeConversationId,
+    setConversationId: setActiveConversationId,
+    appendMessages,
+    replaceMessages,
+    refetchDocuments,
+  }
 }

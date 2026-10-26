@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from './auth/useAuth'
 import { AuroraBrand } from './components/AuthComponents'
+import { sendMessage, generateSummary } from './data/chatApi'
 import { useWorkspaceData } from './data/useWorkspaceData'
 import { uploadDocument } from './data/uploadDocument'
 import { supabase } from './lib/supabase'
@@ -84,6 +85,55 @@ function SummaryPanel({ documents, loading, error, studySpaceId, userId, refetch
   const [uploadError, setUploadError] = useState('')
   const [retryingDocumentIds, setRetryingDocumentIds] = useState<Set<string>>(() => new Set())
   const [currentTime, setCurrentTime] = useState(0)
+  const [generatingSummaryIds, setGeneratingSummaryIds] = useState<Set<string>>(() => new Set())
+  const [summaryErrors, setSummaryErrors] = useState<Record<string, string>>({})
+  const autoRequestedSummaryIds = useRef(new Set<string>())
+  const autoSummaryCount = useRef(0)
+  const autoSummaryRunning = useRef(false)
+
+  useEffect(() => {
+    const candidates = documents.filter((document) =>
+      document.processing_status === 'ready' && document.summary === null &&
+      !autoRequestedSummaryIds.current.has(document.id))
+    const batch = candidates.slice(0, Math.max(0, 3 - autoSummaryCount.current))
+    if (batch.length === 0 || autoSummaryRunning.current) return
+
+    autoSummaryRunning.current = true
+    const requestedIds = batch.map((document) => document.id)
+    for (const document of batch) {
+      autoSummaryCount.current += 1
+      autoRequestedSummaryIds.current.add(document.id)
+    }
+    setGeneratingSummaryIds((current) => new Set([...current, ...requestedIds]))
+
+    void (async () => {
+      for (const document of batch) {
+        try {
+          await generateSummary(document.id)
+        } catch (caughtError) {
+          console.error('Automatic summary generation failed:', caughtError)
+          setSummaryErrors((current) => ({
+            ...current,
+            [document.id]: caughtError instanceof Error ? caughtError.message : 'Unable to generate this summary.',
+          }))
+        }
+      }
+
+      if (requestedIds.length > 0) {
+        try {
+          await refetchDocuments()
+        } catch (caughtError) {
+          console.error('Unable to refresh summaries:', caughtError)
+        }
+      }
+      setGeneratingSummaryIds((current) => {
+        const next = new Set(current)
+        for (const id of requestedIds) next.delete(id)
+        return next
+      })
+      autoSummaryRunning.current = false
+    })()
+  }, [documents, refetchDocuments])
 
   useEffect(() => {
     if (!documents.some((document) => document.processing_status === 'pending')) return
@@ -100,6 +150,30 @@ function SummaryPanel({ documents, loading, error, studySpaceId, userId, refetch
       console.error('Unable to refresh document after retry:', caughtError)
     } finally {
       setRetryingDocumentIds((current) => {
+        const next = new Set(current)
+        next.delete(documentId)
+        return next
+      })
+    }
+  }
+
+  async function handleGenerateSummary(documentId: string) {
+    setSummaryErrors((current) => {
+      const next = { ...current }
+      delete next[documentId]
+      return next
+    })
+    setGeneratingSummaryIds((current) => new Set(current).add(documentId))
+    try {
+      await generateSummary(documentId)
+      await refetchDocuments()
+    } catch (caughtError) {
+      setSummaryErrors((current) => ({
+        ...current,
+        [documentId]: caughtError instanceof Error ? caughtError.message : 'Unable to generate this summary.',
+      }))
+    } finally {
+      setGeneratingSummaryIds((current) => {
         const next = new Set(current)
         next.delete(documentId)
         return next
@@ -153,6 +227,19 @@ function SummaryPanel({ documents, loading, error, studySpaceId, userId, refetch
                   <h3 title={file.file_name}>{file.file_name}</h3>
                 </div>
                 <p>{file.summary ?? 'Summary not ready yet'}</p>
+                {file.processing_status === 'ready' && file.summary === null && (
+                  <>
+                    {summaryErrors[file.id] && <p className="summary-card__error">{summaryErrors[file.id]}</p>}
+                    <button
+                      className="document-retry"
+                      type="button"
+                      disabled={generatingSummaryIds.has(file.id)}
+                      onClick={() => void handleGenerateSummary(file.id)}
+                    >
+                      {generatingSummaryIds.has(file.id) ? 'Generating...' : 'Generate summary'}
+                    </button>
+                  </>
+                )}
                 <span className="summary-card__type">{kind === 'pdf' ? 'PDF document' : 'Document'}</span>
                 {file.processing_status === 'processing' && <span className="summary-card__type">Processing...</span>}
                 {file.processing_status === 'pending' && <span className="summary-card__type">Pending</span>}
@@ -199,7 +286,82 @@ function SummaryPanel({ documents, loading, error, studySpaceId, userId, refetch
   )
 }
 
-function ChatPanel({ messages, loading, error }: { messages: MessageRow[]; loading: boolean; error: string | null }) {
+function ChatPanel({
+  messages,
+  loading,
+  error,
+  conversationId,
+  setConversationId,
+  appendMessages,
+  replaceMessages,
+}: {
+  messages: MessageRow[]
+  loading: boolean
+  error: string | null
+  conversationId: string | null
+  setConversationId: (conversationId: string | null) => void
+  appendMessages: (messages: MessageRow[]) => void
+  replaceMessages: (temporaryIds: string[], messages: MessageRow[]) => void
+}) {
+  const [input, setInput] = useState('')
+  const [isSending, setIsSending] = useState(false)
+  const [chatError, setChatError] = useState('')
+  const messagesRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const container = messagesRef.current
+    if (container) container.scrollTop = container.scrollHeight
+  }, [messages, isSending])
+
+  async function handleSend(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const text = input
+    if (!text.trim() || isSending || loading) return
+
+    const requestId = crypto.randomUUID()
+    const optimisticUserId = `optimistic-user-${requestId}`
+    const thinkingId = `thinking-${requestId}`
+    const createdAt = new Date().toISOString()
+    const optimisticMessages: MessageRow[] = [
+      {
+        id: optimisticUserId,
+        conversation_id: conversationId ?? '',
+        role: 'user',
+        content: text,
+        sources: null,
+        created_at: createdAt,
+      },
+      {
+        id: thinkingId,
+        conversation_id: conversationId ?? '',
+        role: 'assistant',
+        content: 'Aurora is thinking...',
+        sources: null,
+        created_at: createdAt,
+      },
+    ]
+
+    setChatError('')
+    setInput('')
+    setIsSending(true)
+    appendMessages(optimisticMessages)
+
+    try {
+      const response = await sendMessage(text, conversationId)
+      setConversationId(response.conversation_id)
+      replaceMessages(
+        [optimisticUserId, thinkingId],
+        [response.user_message, response.assistant_message],
+      )
+    } catch (caughtError) {
+      replaceMessages([optimisticUserId, thinkingId], [])
+      setInput(text)
+      setChatError(caughtError instanceof Error ? caughtError.message : 'Unable to send your message. Please try again.')
+    } finally {
+      setIsSending(false)
+    }
+  }
+
   return (
     <section className="workspace-panel chat-panel" aria-labelledby="chat-heading">
       <div className="panel-heading chat-panel__heading">
@@ -213,10 +375,14 @@ function ChatPanel({ messages, loading, error }: { messages: MessageRow[]; loadi
         </span>
       </div>
 
-      <div className="chat-messages" aria-label="Conversation">
+      <div className="chat-messages" aria-label="Conversation" ref={messagesRef}>
         {messages.length > 0 && <p className="chat-date">{new Date(messages[0].created_at).toLocaleDateString()}</p>}
-        {loading ? <p>Loading conversation...</p> : error ? <p role="alert">{error}</p> : messages.length === 0 ? <p>Ask a question about your files to get started</p> : messages.map((message) => (
-          <article
+        {loading ? <p>Loading conversation...</p> : error ? <p role="alert">{error}</p> : messages.length === 0 ? <p>Ask a question about your files to get started</p> : messages.map((message) => {
+          const sources = message.role === 'assistant' ? message.sources ?? [] : []
+          const sourceLabels = sources.map((source) => source.page_number === null
+            ? source.file_name
+            : `${source.file_name} (p. ${source.page_number})`)
+          return <article
             className={`message message--${message.role === 'user' ? 'you' : 'aurora'}`}
             key={message.id}
           >
@@ -230,9 +396,11 @@ function ChatPanel({ messages, loading, error }: { messages: MessageRow[]; loadi
                 {message.role === 'user' ? 'You' : 'Aurora'}
               </span>
               <p>{message.content}</p>
+              {sourceLabels.length > 0 && <span className="message__sources">Sources: {sourceLabels.join(', ')}</span>}
             </div>
           </article>
-        ))}
+        })}
+        {chatError && <p className="chat-error" role="alert">{chatError}</p>}
       </div>
 
       {/* TODO: show attached files (step 3) */}
@@ -241,8 +409,7 @@ function ChatPanel({ messages, loading, error }: { messages: MessageRow[]; loadi
         <span>Introduction to Biology.pdf</span>
         <span className="attachment-context">Attached</span>
       </div> */}
-      {/* TODO: connect the composer to chat submission. */}
-      <form className="chat-composer" onSubmit={(event) => event.preventDefault()}>
+      <form className="chat-composer" onSubmit={(event) => void handleSend(event)}>
         <label className="visually-hidden" htmlFor="chat-message">
           Message Aurora
         </label>
@@ -250,13 +417,15 @@ function ChatPanel({ messages, loading, error }: { messages: MessageRow[]; loadi
           id="chat-message"
           type="text"
           placeholder="Ask a question about your files..."
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          disabled={isSending}
         />
         {/* TODO: connect this button to file attachment. */}
         <button className="icon-button composer-attach" type="button" aria-label="Attach a file">
           <PaperclipIcon />
         </button>
-        {/* TODO: connect this button to chat submission. */}
-        <button className="icon-button composer-send" type="button" aria-label="Send message">
+        <button className="icon-button composer-send" type="submit" aria-label="Send message" disabled={isSending || !input.trim() || loading}>
           <SendIcon />
         </button>
       </form>
@@ -445,7 +614,15 @@ function HomePage() {
           userId={user?.id}
           refetchDocuments={workspaceData.refetchDocuments}
         />
-        <ChatPanel messages={workspaceData.messages} loading={workspaceData.loading} error={workspaceData.error} />
+        <ChatPanel
+          messages={workspaceData.messages}
+          loading={workspaceData.loading}
+          error={workspaceData.error}
+          conversationId={workspaceData.conversationId}
+          setConversationId={workspaceData.setConversationId}
+          appendMessages={workspaceData.appendMessages}
+          replaceMessages={workspaceData.replaceMessages}
+        />
         <QuizPanel quiz={workspaceData.quiz} loading={workspaceData.loading} error={workspaceData.error} />
       </main>
     </div>
